@@ -19,6 +19,24 @@ def _init_state() -> None:
         st.session_state["user_id"] = ""
     if "user_login" not in st.session_state:
         st.session_state["user_login"] = ""
+    if "analysis_vod_id" not in st.session_state:
+        st.session_state["analysis_vod_id"] = ""
+    if "analysis_message_count" not in st.session_state:
+        st.session_state["analysis_message_count"] = 0
+    if "analysis_mean" not in st.session_state:
+        st.session_state["analysis_mean"] = 0.0
+    if "analysis_std_dev" not in st.session_state:
+        st.session_state["analysis_std_dev"] = 0.0
+    if "analysis_activity_df" not in st.session_state:
+        st.session_state["analysis_activity_df"] = pd.DataFrame()
+    if "analysis_spikes_df" not in st.session_state:
+        st.session_state["analysis_spikes_df"] = pd.DataFrame()
+    if "analysis_segments" not in st.session_state:
+        st.session_state["analysis_segments"] = []
+    if "selected_clip_labels" not in st.session_state:
+        st.session_state["selected_clip_labels"] = []
+    if "selected_spikes_input" not in st.session_state:
+        st.session_state["selected_spikes_input"] = ""
 
 
 def _format_hh_mm_ss(total_seconds: int) -> str:
@@ -26,6 +44,25 @@ def _format_hh_mm_ss(total_seconds: int) -> str:
     hours, remainder = divmod(total_seconds, 3600)
     minutes, seconds = divmod(remainder, 60)
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
+def _parse_timestamp_to_seconds(value: str) -> int:
+    token = value.strip()
+    if not token:
+        raise ValueError("Empty timestamp value")
+
+    if token.isdigit():
+        return int(token)
+
+    parts = token.split(":")
+    if len(parts) != 3:
+        raise ValueError(f"Invalid timestamp '{token}'. Use HH:MM:SS or seconds.")
+
+    hours, minutes, seconds = parts
+    if not (hours.isdigit() and minutes.isdigit() and seconds.isdigit()):
+        raise ValueError(f"Invalid timestamp '{token}'. Use HH:MM:SS or seconds.")
+
+    return int(hours) * 3600 + int(minutes) * 60 + int(seconds)
 
 
 def _render_chart(activity_df: pd.DataFrame, spikes_df: pd.DataFrame, window_size: int) -> None:
@@ -123,11 +160,6 @@ def run_app() -> None:
     default_chat_path = Path("data/chat") / f"{selected_vod.vod_id}.json"
     chat_file_path = st.text_input("or local chat JSON path", value=str(default_chat_path))
 
-    st.subheader("3) Clip Extraction (Optional)")
-    extract_now = st.checkbox("Generate clips after analysis", value=False)
-    local_vod_path = st.text_input("Local VOD video file path (.mp4/.mkv)", value="")
-    output_dir = st.text_input("Clip output directory", value="clips")
-
     if st.button("Analyze", type="primary"):
         try:
             if uploaded_chat is not None:
@@ -161,64 +193,132 @@ def run_app() -> None:
                 post_spike_buffer=int(post_buffer),
             )
 
-            st.success(f"Analyzed {len(messages)} chat messages. Found {len(spikes)} spikes.")
-            _render_chart(activity_df, spikes_df, int(window_size))
+            st.session_state["analysis_vod_id"] = selected_vod.vod_id
+            st.session_state["analysis_message_count"] = len(messages)
+            st.session_state["analysis_mean"] = mean
+            st.session_state["analysis_std_dev"] = std_dev
+            st.session_state["analysis_activity_df"] = activity_df
+            st.session_state["analysis_spikes_df"] = spikes_df
+            st.session_state["analysis_segments"] = segments
 
-            st.write("Global stats", {"mean": mean, "std_dev": std_dev, "threshold": mean + float(sensitivity) * std_dev})
-            st.subheader("Activity windows")
-            activity_display = activity_df.copy()
-            activity_display["timestamp"] = activity_display["time_seconds"].apply(_format_hh_mm_ss)
-            activity_display = activity_display[["timestamp", "comment_count", "threshold"]]
-            st.dataframe(activity_display, use_container_width=True)
+        except Exception as exc:
+            st.error(str(exc))
 
-            st.subheader("Detected spikes")
-            spikes_display = spikes_df.copy()
-            if not spikes_display.empty:
-                spikes_display["timestamp"] = spikes_display["spike_time"].apply(_format_hh_mm_ss)
-                spikes_display = spikes_display[["timestamp", "window_comment_count", "mean", "std_dev"]]
-            st.dataframe(spikes_display, use_container_width=True)
+    analysis_ready = st.session_state["analysis_vod_id"] == selected_vod.vod_id
+    if not analysis_ready:
+        st.caption("Run Analyze first, then generate/download clips.")
+        return
 
-            segments_table = pd.DataFrame(
-                [
-                    {
-                        "spike_time": _format_hh_mm_ss(seg.spike_time),
-                        "clip_start": _format_hh_mm_ss(seg.clip_start),
-                        "clip_end": _format_hh_mm_ss(seg.clip_end),
-                    }
-                    for seg in segments
-                ],
-                columns=["spike_time", "clip_start", "clip_end"],
+    activity_df = st.session_state["analysis_activity_df"]
+    spikes_df = st.session_state["analysis_spikes_df"]
+    segments = st.session_state["analysis_segments"]
+    mean = st.session_state["analysis_mean"]
+    std_dev = st.session_state["analysis_std_dev"]
+    message_count = st.session_state["analysis_message_count"]
+
+    st.success(f"Analyzed {message_count} chat messages. Found {len(spikes_df)} spikes.")
+    _render_chart(activity_df, spikes_df, int(window_size))
+
+    st.write("Global stats", {"mean": mean, "std_dev": std_dev, "threshold": mean + float(sensitivity) * std_dev})
+    st.subheader("Activity windows")
+    activity_display = activity_df.copy()
+    activity_display["timestamp"] = activity_display["time_seconds"].apply(_format_hh_mm_ss)
+    activity_display = activity_display[["timestamp", "comment_count", "threshold"]]
+    st.dataframe(activity_display, use_container_width=True)
+
+    st.subheader("Detected spikes")
+    spikes_display = spikes_df.copy()
+    if not spikes_display.empty:
+        spikes_display["timestamp"] = spikes_display["spike_time"].apply(_format_hh_mm_ss)
+        spikes_display = spikes_display[["timestamp", "window_comment_count", "mean", "std_dev"]]
+    st.dataframe(spikes_display, use_container_width=True)
+
+    segments_table = pd.DataFrame(
+        [
+            {
+                "spike_time": _format_hh_mm_ss(seg.spike_time),
+                "clip_start": _format_hh_mm_ss(seg.clip_start),
+                "clip_end": _format_hh_mm_ss(seg.clip_end),
+            }
+            for seg in segments
+        ],
+        columns=["spike_time", "clip_start", "clip_end"],
+    )
+    st.subheader("Clip windows")
+    st.dataframe(segments_table, use_container_width=True)
+
+    st.subheader("3) Clip Extraction")
+    local_vod_path = st.text_input("Local VOD video file path (.mp4/.mkv)", value="")
+    output_dir = st.text_input("Clip output directory", value="clips")
+    clip_options = []
+    option_to_spike = {}
+    for seg in segments:
+        spike_ts = _format_hh_mm_ss(seg.spike_time)
+        clip_start = _format_hh_mm_ss(seg.clip_start)
+        clip_end = _format_hh_mm_ss(seg.clip_end)
+        label = f"{spike_ts} ({clip_start} -> {clip_end})"
+        clip_options.append(label)
+        option_to_spike[label] = spike_ts
+
+    current_selected = st.session_state.get("selected_clip_labels", [])
+    valid_selected = [label for label in current_selected if label in clip_options]
+    if current_selected != valid_selected:
+        st.session_state["selected_clip_labels"] = valid_selected
+
+    selected_labels = st.multiselect(
+        "Select clip windows",
+        options=clip_options,
+        key="selected_clip_labels",
+        help="Selecting windows auto-populates the spike timestamp field below.",
+    )
+
+    if selected_labels:
+        st.session_state["selected_spikes_input"] = ", ".join(option_to_spike[label] for label in selected_labels)
+
+    selected_spikes_input = st.text_input(
+        "Selected spikes (comma-separated HH:MM:SS or seconds)",
+        key="selected_spikes_input",
+    )
+
+    if st.button("Generate selected clips", type="primary"):
+        try:
+            if not local_vod_path:
+                st.warning("Set a local VOD path to extract clips.")
+                return
+            if not segments:
+                st.info("No spikes found, no clips generated.")
+                return
+
+            selected_segments = segments
+            if selected_spikes_input.strip():
+                selected_seconds = {
+                    _parse_timestamp_to_seconds(token)
+                    for token in selected_spikes_input.split(",")
+                    if token.strip()
+                }
+                selected_segments = [seg for seg in segments if seg.spike_time in selected_seconds]
+                if not selected_segments:
+                    st.warning("No spikes matched your selected timestamps. No clips generated.")
+                    return
+
+            extracted = extract_clips_with_ffmpeg(
+                input_video_path=Path(local_vod_path),
+                output_dir=Path(output_dir),
+                streamer_name=selected_vod.user_login,
+                vod_id=selected_vod.vod_id,
+                segments=selected_segments,
             )
-            st.subheader("Clip windows")
-            st.dataframe(segments_table, use_container_width=True)
-
-            if extract_now:
-                if not local_vod_path:
-                    st.warning("Set a local VOD path to extract clips.")
-                elif not segments:
-                    st.info("No spikes found, no clips generated.")
-                else:
-                    extracted = extract_clips_with_ffmpeg(
-                        input_video_path=Path(local_vod_path),
-                        output_dir=Path(output_dir),
-                        streamer_name=selected_vod.user_login,
-                        vod_id=selected_vod.vod_id,
-                        segments=segments,
-                    )
-                    st.subheader("Generated clips")
-                    for clip in extracted:
-                        clip_path = Path(clip.output_path or "")
-                        if clip_path.exists():
-                            with clip_path.open("rb") as file_obj:
-                                st.download_button(
-                                    label=f"Download {clip_path.name}",
-                                    data=file_obj.read(),
-                                    file_name=clip_path.name,
-                                    mime="video/mp4",
-                                )
-            else:
-                st.caption("Enable 'Generate clips after analysis' to create downloadable clips.")
-
+            st.subheader("Generated clips")
+            for clip in extracted:
+                clip_path = Path(clip.output_path or "")
+                if clip_path.exists():
+                    with clip_path.open("rb") as file_obj:
+                        st.download_button(
+                            label=f"Download {clip_path.name}",
+                            data=file_obj.read(),
+                            file_name=clip_path.name,
+                            mime="video/mp4",
+                        )
         except Exception as exc:
             st.error(str(exc))
 

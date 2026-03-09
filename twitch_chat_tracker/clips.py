@@ -50,6 +50,10 @@ def extract_clips_with_ffmpeg(
 
     if not input_video_path.exists():
         raise FileNotFoundError(f"Input VOD file not found: {input_video_path}")
+    if input_video_path.is_dir():
+        raise FileNotFoundError(
+            f"Input VOD path is a directory, not a video file: {input_video_path}"
+        )
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -79,7 +83,14 @@ def extract_clips_with_ffmpeg(
             "aac",
             str(out_path),
         ]
-        subprocess.run(cmd, check=True, capture_output=True, text=True)
+        try:
+            subprocess.run(cmd, check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as exc:
+            stderr = (exc.stderr or "").strip()
+            details = f"ffmpeg failed for spike_time={segment.spike_time}"
+            if stderr:
+                details = f"{details}: {stderr}"
+            raise RuntimeError(details) from exc
         results.append(
             ClipSegment(
                 spike_time=segment.spike_time,
