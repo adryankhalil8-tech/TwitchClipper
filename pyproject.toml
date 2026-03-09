@@ -1,7 +1,14 @@
 [project]
-name = "python-template"
+name = "twitch-chat-tracker"
 version = "0.1.0"
-description = ""
-authors = ["Your Name <you@example.com>"]
+description = "Twitch VOD spike detection and clip extraction"
+authors = ["Student <student@example.com>"]
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "altair>=5.0.0",
+    "matplotlib>=3.10.5",
+    "numpy>=1.26.0",
+    "pandas>=2.3.1",
+    "requests>=2.32.4",
+    "streamlit>=1.47.0",
+]
